@@ -28,7 +28,7 @@ pub fn open(allocator: Allocator, stream: StreamSource) (Error || StreamSource.R
     return .{
         .allocator = allocator,
         .stream = stream,
-        .deflate_decompressor = deflate.decompressor(allocator, s.reader(), null),
+        .deflate_decompressor = try deflate.decompressor(allocator, s.reader(), null),
         .end_record_pos = try locateEndRecord(&s),
     };
 }
@@ -40,7 +40,7 @@ pub fn create(allocator: Allocator, stream: StreamSource) (Error || StreamSource
 }
 
 /// Release all allocated memory.
-pub fn deinit(self: Self) void {
+pub fn deinit(self: *Self) void {
     self.deflate_decompressor.deinit();
 }
 
@@ -49,7 +49,26 @@ pub fn iterator(self: *Self) (Error || StreamSource.ReadError)!Iterator {
 }
 
 fn resetDeflateDecompressor(self: *Self) Error!void {
-    try self.deflate_decompressor.reset(self.stream.reader(), null);
+    // TODO: It seems like the reset method does not reset all state.
+    self.deflate_decompressor.deinit();
+    self.deflate_decompressor = try deflate.decompressor(self.allocator, self.stream.reader(), null);
+}
+
+// TODO: Maybe this should be on `Entry`.
+fn seekToEntryData(self: *Self, local_file_pos: u64) (Error || StreamSource.ReadError)!void {
+    try self.stream.seekTo(local_file_pos);
+
+    const header = try readFieldsLittle(LocalFileHeader, self.stream.reader());
+    if (header.magic != .local_file) {
+        log.err("Expected local file magic, got 0x{x:0>8}: pos = {}", .{
+            @intFromEnum(header.magic),
+            try self.stream.getPos(),
+        });
+        return error.BadMagic;
+    }
+
+    try self.stream.seekBy(header.info.file_name_len +
+        header.info.extra_field_len);
 }
 
 // TODO: Ensure end record data is supported before using it.
@@ -86,6 +105,7 @@ fn locateEndRecord(stream: *StreamSource) (Error || StreamSource.ReadError)!u64 
 
 fn endRecordHeader(self: *Self) (Error || StreamSource.ReadError)!EndRecordHeader {
     try self.stream.seekTo(self.end_record_pos);
+
     const header = try readFieldsLittle(EndRecordHeader, self.stream.reader());
     if (header.magic != .end_record) {
         log.err("Expected end of central directory magic, got 0x{x:0>8}: pos = {}", .{
@@ -94,6 +114,7 @@ fn endRecordHeader(self: *Self) (Error || StreamSource.ReadError)!EndRecordHeade
         });
         return error.BadMagic;
     }
+
     return header;
 }
 
@@ -199,7 +220,11 @@ pub const Iterator = struct {
         self.entry_index += 1;
         self.entry_pos = try zip.stream.getPos();
         // Reset decompressor so file data can be read from the entry.
-        try zip.resetDeflateDecompressor();
+        try zip.seekToEntryData(header.local_file_pos);
+
+        if (header.local_file.compression_method == .deflate) {
+            try zip.resetDeflateDecompressor();
+        }
 
         return .{
             .zip = zip,
@@ -245,53 +270,51 @@ pub const EntryInfo = struct {
     local_file_pos: u32,
 };
 
+// TODO: Maybe make `Entry` itself not a reader. Case in point you can't directly call `Entry.reader` while iterating.
 /// Entries must not be read after advancing past them using `Iterator.next`.
 pub const Entry = struct {
     zip: *Self,
+    /// Information about the file referenced by this `Entry`.
     info: EntryInfo,
     hasher: std.hash.Crc32,
     /// Changes if raw mode is enabled for reading. No decompression will occur
-    /// regardless of the compression mode if this is enabled.
+    /// regardless of the compression mode if this is enabled. Compressed data
+    /// read with raw mode will not have their CRC computed.
     ///
     /// Raw mode must not be changed while reading from the stream.
     raw_mode: bool = false,
+    bytes_read: usize = 0,
 
-    pub const Reader = std.io.Reader(*Entry, Error, read);
+    // TODO: Do something so that this can also be called Error. Also returning the entire set of `Decompressor` errors
+    // isn't ideal.
+    pub const ReadError = Error || StreamSource.ReadError || deflate.Decompressor(StreamSource.Reader).Error;
+    pub const Reader = std.io.Reader(*Entry, ReadError, read);
 
     pub fn close(self: Entry) void {
-        self.zip.allocator.free(self.file_name);
-        self.zip.allocator.free(self.extra_field);
-        self.zip.allocator.free(self.file_comment);
+        self.zip.allocator.free(self.info.file_name);
+        self.zip.allocator.free(self.info.extra_field);
+        self.zip.allocator.free(self.info.file_comment);
     }
 
     pub fn reader(self: *Entry) Reader {
         return .{ .context = self };
     }
 
-    fn read(self: *Entry, buffer: []u8) Error!usize {
-        const compression = if (self.raw_mode)
-            .store
-        else
-            self.info.compression_method;
+    fn read(self: *Entry, buffer: []u8) ReadError!usize {
+        if (self.raw_mode) @panic("unimplemented");
+        log.debug("Reading entry at pos {}", .{try self.zip.stream.getPos()});
 
-        const read_len = switch (compression) {
-            .store => try self.zip.stream.read(buffer),
-            .deflate => blk: {
-                const read_len = try self.zip.deflate_decompressor.read(buffer);
-                if (read_len == 0) {
-                    if (self.zip.deflate_decompressor.close()) |err| {
-                        return err;
-                    }
+        const compression = self.info.compression_method;
+
+        const bytes_left = self.info.uncompressed_size - self.bytes_read;
+        if (bytes_left == 0) {
+            if (compression == .deflate) {
+                if (self.zip.deflate_decompressor.close()) |err| {
+                    log.err("Deflate error: entry = \"{s}\"", .{self.info.file_name});
+                    return err;
                 }
-                break :blk read_len;
-            },
-            else => {
-                log.err("Unsupported compression method = {}: entry = \"{s}\"", .{ compression, self.info.file_name });
-                return error.UnsupportedCompression;
-            },
-        };
+            }
 
-        if (read_len == 0) {
             const computed_crc = self.hasher.final();
             if (computed_crc != self.info.uncompressed_crc) {
                 log.err("CRC mismatch: expected 0x{x:0>8}, got 0x{x:0>8}: entry = \"{s}\"", .{
@@ -301,10 +324,24 @@ pub const Entry = struct {
                 });
                 return error.CorruptedZip;
             }
-        } else {
-            self.hasher.update(buffer);
+
+            return 0;
         }
 
+        const max_read = @min(buffer.len, bytes_left);
+        const read_len = switch (compression) {
+            .store => try self.zip.stream.read(buffer[0..max_read]),
+            .deflate => try self.zip.deflate_decompressor.read(buffer[0..max_read]),
+            else => {
+                log.err("Unsupported compression method = {}: entry = \"{s}\"", .{ compression, self.info.file_name });
+                return error.UnsupportedCompression;
+            },
+        };
+        defer self.bytes_read += read_len;
+
+        log.debug("Read {} bytes with {} left", .{ read_len, bytes_left });
+
+        self.hasher.update(buffer[0..read_len]);
         return read_len;
     }
 };
