@@ -277,6 +277,7 @@ pub const Entry = struct {
     /// Information about the file referenced by this `Entry`.
     info: EntryInfo,
     hasher: std.hash.Crc32,
+    // TODO: Make separate reader for raw mode. It's a bit cluttered.
     /// Changes if raw mode is enabled for reading. No decompression will occur
     /// regardless of the compression mode if this is enabled. Compressed data
     /// read with raw mode will not have their CRC computed.
@@ -301,12 +302,12 @@ pub const Entry = struct {
     }
 
     fn read(self: *Entry, buffer: []u8) ReadError!usize {
-        if (self.raw_mode) @panic("unimplemented");
         log.debug("Reading entry at pos {}", .{try self.zip.stream.getPos()});
 
-        const compression = self.info.compression_method;
+        const compression = if (self.raw_mode) .store else self.info.compression_method;
+        const do_crc = !self.raw_mode or self.info.compression_method == .store;
 
-        const bytes_left = self.info.uncompressed_size - self.bytes_read;
+        const bytes_left = (if (self.raw_mode) self.info.compressed_size else self.info.uncompressed_size) - self.bytes_read;
         if (bytes_left == 0) {
             if (compression == .deflate) {
                 if (self.zip.deflate_decompressor.close()) |err| {
@@ -316,7 +317,7 @@ pub const Entry = struct {
             }
 
             const computed_crc = self.hasher.final();
-            if (computed_crc != self.info.uncompressed_crc) {
+            if (do_crc and computed_crc != self.info.uncompressed_crc) {
                 log.err("CRC mismatch: expected 0x{x:0>8}, got 0x{x:0>8}: entry = \"{s}\"", .{
                     self.info.uncompressed_crc,
                     computed_crc,
