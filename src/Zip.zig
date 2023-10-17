@@ -219,9 +219,9 @@ pub const Iterator = struct {
 
         self.entry_index += 1;
         self.entry_pos = try zip.stream.getPos();
-        // Reset decompressor so file data can be read from the entry.
         try zip.seekToEntryData(header.local_file_pos);
 
+        // Reset decompressor so file data can be read from the entry.
         if (header.local_file.compression_method == .deflate) {
             try zip.resetDeflateDecompressor();
         }
