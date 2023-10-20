@@ -15,7 +15,7 @@ A [Zig](https://ziglang.org/) library for manipulating Zip archives.
     .version = "0.1.0",
     .dependencies = .{
         .zipdeez = .{
-            .url = "git+https://github.com/Sirius902/zipdeez.git#LATEST_COMMIT,
+            .url = "git+https://github.com/Sirius902/zipdeez.git#LATEST_COMMIT",
         },
     },
     .paths = .{
