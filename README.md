@@ -1,4 +1,4 @@
-# zipdeez ['zɪpdi 'izi]
+# zipdeez ['zɪpdizi]
 
 A [Zig](https://ziglang.org/) library for manipulating Zip archives.
 
