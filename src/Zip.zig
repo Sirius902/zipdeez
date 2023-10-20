@@ -119,22 +119,22 @@ fn endRecordHeader(self: *Self) (Error || StreamSource.ReadError)!EndRecordHeade
 }
 
 fn streamedSize(comptime T: type) comptime_int {
-    if (@typeInfo(T) != .Struct or @bitSizeOf(T) % 8 != 0) {
-        @compileError("invalid type");
+    if (@typeInfo(T).Struct.layout != .Packed or @bitSizeOf(T) % 8 != 0) {
+        @compileError("invalid type passed to streamedSize");
     }
 
     inline for (std.meta.fields(T)) |field| {
         if (field.is_comptime) {
-            @compileError("comptime field not allowed");
+            @compileError("comptime field not allowed in streamedSize");
         }
 
         switch (@typeInfo(field.type)) {
             .Enum => |enum_info| {
                 if (enum_info.is_exhaustive) {
-                    @compileError("enum field must be non-exhaustive");
+                    @compileError("enum field must be non-exhaustive in streamedSize");
                 }
             },
-            .Union, .ErrorSet => @compileError("invalid field type"),
+            .Union, .ErrorSet => @compileError("invalid field type in streamedSize"),
             else => {},
         }
     }
@@ -144,6 +144,10 @@ fn streamedSize(comptime T: type) comptime_int {
 
 fn readFieldsLittle(comptime T: type, reader: anytype) (@TypeOf(reader).Error || error{EndOfStream})!T {
     var t: T = undefined;
+    // TODO: This may be a horrible idea but as long as there's only big and
+    // little endian and bytes past `streamedSize(T)` are never accessed
+    // anywhere it should be fine probably since packed structs are backed
+    // by integers.
     try reader.readNoEof(std.mem.asBytes(&t)[0..streamedSize(T)]);
 
     switch (native_endian) {
