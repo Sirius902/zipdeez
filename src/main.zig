@@ -1,7 +1,7 @@
 const std = @import("std");
 const fs = std.fs;
 const Allocator = std.mem.Allocator;
-const Zip = @import("zzip").Zip;
+const Zip = @import("zipdeez").Zip;
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};

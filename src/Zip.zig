@@ -20,7 +20,7 @@ pub const Error = error{
 } || Allocator.Error;
 
 const Self = @This();
-const log = std.log.scoped(.zzip);
+const log = std.log.scoped(.zipdeez);
 const native_endian = builtin.cpu.arch.endian();
 
 pub fn open(allocator: Allocator, stream: StreamSource) (Error || StreamSource.ReadError)!Self {
