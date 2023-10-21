@@ -3,6 +3,7 @@ const builtin = @import("builtin");
 const deflate = std.compress.deflate;
 const Allocator = std.mem.Allocator;
 const StreamSource = std.io.StreamSource;
+const log = @import("log.zig").log;
 
 allocator: Allocator,
 stream: StreamSource,
@@ -20,7 +21,6 @@ pub const Error = error{
 } || Allocator.Error;
 
 const Self = @This();
-const log = std.log.scoped(.zipdeez);
 const native_endian = builtin.cpu.arch.endian();
 
 pub fn open(allocator: Allocator, stream: StreamSource) (Error || StreamSource.ReadError)!Self {
