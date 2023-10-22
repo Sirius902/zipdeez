@@ -49,9 +49,7 @@ pub fn iterator(self: *Self) (Error || StreamSource.ReadError)!Iterator {
 }
 
 fn resetDeflateDecompressor(self: *Self) Error!void {
-    // TODO: It seems like the reset method does not reset all state.
-    self.deflate_decompressor.deinit();
-    self.deflate_decompressor = try deflate.decompressor(self.allocator, self.stream.reader(), null);
+    try self.deflate_decompressor.reset(self.stream.reader(), null);
 }
 
 // TODO: Maybe this should be on `Entry`.
